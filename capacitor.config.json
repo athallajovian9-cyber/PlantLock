@@ -1,0 +1,11 @@
+{
+  "appId": "io.vortex.plantlock",
+  "appName": "PlantLock",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "allowMixedContent": false
+  }
+}

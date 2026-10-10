@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PlantLock</title>
+<style>
+  :root { --bg:#0b1410; --panel:#12211a; --green:#22c55e; --dim:#7fa893;
+          --coral:#ff8b75; --cream:#e7f5ee; }
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { background:var(--bg); color:var(--cream); min-height:100vh;
+         font-family:-apple-system,Segoe UI,Roboto,sans-serif;
+         display:flex; flex-direction:column; align-items:center;
+         padding:16px; padding-bottom:calc(16px + env(safe-area-inset-bottom)); }
+  header { width:100%; max-width:520px; display:flex; justify-content:space-between;
+           align-items:center; background:var(--panel); border-radius:14px;
+           padding:12px 16px; margin-bottom:12px; }
+  header .brand { font-size:20px; font-weight:800; color:var(--green); }
+  #lockState { font-size:12px; color:var(--coral); font-weight:700; }
+  #camWrap { width:100%; max-width:520px; aspect-ratio:4/3; background:#06100c;
+             border-radius:18px; overflow:hidden; position:relative; }
+  video { width:100%; height:100%; object-fit:cover; transform:scaleX(-1); }
+  #camOff { position:absolute; inset:0; display:flex; align-items:center;
+            justify-content:center; color:var(--dim); font-size:15px; padding:20px;
+            text-align:center; }
+  #counter { font-size:56px; font-weight:900; margin-top:14px; line-height:1.1; }
+  #counterSub { color:var(--dim); font-size:13px; letter-spacing:2px; }
+  #barWrap { width:100%; max-width:520px; height:14px; background:#1a2f26;
+             border-radius:8px; margin-top:10px; overflow:hidden; }
+  #bar { height:100%; width:0%; background:var(--green); transition:width .4s; }
+  #verdict { margin-top:14px; font-size:17px; font-weight:800; color:var(--dim); }
+  #engine { font-size:11px; color:var(--dim); opacity:.7; margin-top:4px; }
+  #status { font-size:12px; color:var(--dim); margin-top:6px; min-height:16px; }
+  #btn { margin-top:16px; width:100%; max-width:520px; height:64px; border:none;
+         border-radius:18px; background:var(--green); color:#06100c; font-size:22px;
+         font-weight:900; cursor:pointer; }
+  #btn:active { transform:scale(.98); }
+  #btn.stop { background:#334155; color:var(--cream); font-size:16px; height:50px; }
+  #btn:disabled { opacity:.45; }
+  #celebrate { display:none; margin-top:18px; background:var(--panel);
+               border:1px solid var(--green); border-radius:18px; padding:18px;
+               width:100%; max-width:520px; text-align:center; }
+  #celebrate h2 { color:var(--green); font-size:24px; }
+  #celebrate p { color:var(--dim); font-size:14px; margin-top:6px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">🌱 PlantLock</div>
+  <div id="lockState">FOCUS SESSION</div>
+</header>
+
+<div id="camWrap">
+  <video id="video" playsinline autoplay muted></video>
+  <div id="camOff">camera off — press Start Planting</div>
+</div>
+
+<div id="counterSub">TREES PLANTED</div>
+<div id="counter">0 / 2 minimum</div>
+<div id="barWrap"><div id="bar"></div></div>
+<div id="verdict">● IDLE</div>
+<div id="engine"></div>
+<div id="status"></div>
+
+<button id="btn">Start Planting</button>
+
+<div id="celebrate">
+  <h2>🌳 DONE — UNLOCKED!</h2>
+  <p>Minimum reached. Social media is free again — go touch grass anyway.</p>
+</div>
+
+<canvas id="sample" width="64" height="48" style="display:none"></canvas>
+
+<script>
+const MIN = 2, TICKS = 10;           // 2 trees minimum, 10 ticks per tree
+let ticks = 0, running = false, stream = null, wakeLock = null;
+let prevData = null, lastTick = 0, done = false;
+const $ = id => document.getElementById(id);
+
+async function start() {
+  if (running || done) return;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 640 } }, audio: false });
+  } catch (e) {
+    $("status").textContent = "camera permission denied — allow camera in app settings";
+    return;
+  }
+  $("video").srcObject = stream;
+  $("camOff").style.display = "none";
+  try { wakeLock = await navigator.wake_lock.request("screen"); } catch (e) {}
+  running = true;
+  $("btn").textContent = "Stop camera";
+  $("btn").classList.add("stop");
+  $("engine").textContent = "engine: motion + greenery heuristic (on-device)";
+  $("status").textContent = "camera live — planting only counts when you really do it";
+  loop();
+}
+
+function stop() {
+  running = false;
+  if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+  if (wakeLock) { try { wakeLock.release(); } catch (e) {} wakeLock = null; }
+  $("camOff").style.display = "flex";
+  $("btn").textContent = "Start Planting";
+  $("btn").classList.remove("stop");
+  $("verdict").textContent = "● STOPPED";
+}
+
+function verdict() {
+  const v = $("video");
+  if (!v.videoWidth) return;
+  const c = $("sample"), ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(v, 0, 0, 64, 48);
+  const d = ctx.getImageData(0, 0, 64, 48).data;
+
+  // greenery ratio (HSV-lite: G dominant + saturated)
+  let green = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i+1], b = d[i+2];
+    if (g > 70 && g > r * 1.18 && g > b * 1.18) green++;
+  }
+  const greenRatio = green / (d.length / 4);
+
+  // motion energy vs previous sample
+  let motion = 0;
+  if (prevData) {
+    let diff = 0;
+    for (let i = 0; i < d.length; i += 4)
+      diff += Math.abs(d[i] - prevData[i]);
+    motion = diff / (d.length / 4) / 255;
+  }
+  prevData = d.slice(0);
+
+  const score = Math.min(1, motion / 0.10 * 0.55 + Math.min(greenRatio * 4, 1) * 0.45);
+  const planting = motion > 0.035 && greenRatio > 0.10 && score >= 0.42;
+
+  const now = Date.now();
+  if (now - lastTick >= 1000) {          // one verdict per second
+    lastTick = now;
+    if (planting && !done) {             // number MOVES
+      ticks++;
+      $("verdict").textContent = "● PLANTING ✓ " + Math.round(score * 100) + "%";
+      $("verdict").style.color = "#22c55e";
+      update();
+    } else if (!done) {                  // number does NOT move
+      $("verdict").textContent = "● NOT PLANTING " + Math.round(score * 100) + "%";
+      $("verdict").style.color = "#ff8b75";
+      update();
+    }
+  } else {
+    $("verdict").textContent = (planting ? "● PLANTING… " : "● WATCHING… ") +
+      Math.round(score * 100) + "%";
+    $("verdict").style.color = planting ? "#22c55e" : "#7fa893";
+  }
+}
+
+function update() {
+  const trees = Math.floor(ticks / TICKS);
+  $("counter").textContent = trees < MIN ? trees + " / " + MIN + " minimum"
+                                         : trees + " 🌳 UNLOCKED";
+  $("bar").style.width = ((ticks % TICKS) / TICKS * 100) + "%";
+  if (trees >= MIN && !done) {
+    done = true;
+    $("lockState").textContent = "SOCIAL MEDIA FREE";
+    $("lockState").style.color = "#22c55e";
+    $("celebrate").style.display = "block";
+    $("btn").disabled = true;
+    stop();
+  }
+}
+
+function loop() {
+  if (!running) return;
+  verdict();
+  setTimeout(loop, 250);
+}
+
+$("btn").addEventListener("click", () => running ? stop() : start());
+</script>
+</body>
+</html>

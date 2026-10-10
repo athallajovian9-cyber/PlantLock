@@ -1,0 +1,7 @@
+node_modules/
+android/.gradle/
+android/app/build/
+android/build/
+android/capacitor.settings.gradle
+android/app/capacitor.build.gradle
+*.log
